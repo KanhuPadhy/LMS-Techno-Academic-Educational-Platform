@@ -1,0 +1,10 @@
+cd backend
+
+# Install SendGrid SDK for sending email
+npm install @sendgrid/mail
+
+# Install SendGrid Event Webhook verifier (optional, but recommended)
+npm install @sendgrid/eventwebhook
+
+# If you don’t already have SQLite bindings installed
+npm install better-sqlite3
