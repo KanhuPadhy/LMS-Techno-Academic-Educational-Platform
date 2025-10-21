@@ -1,0 +1,122 @@
+name: Full E2E (Backend + Frontend + Playwright + Cypress)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  BACKEND_DIR: backend
+  FRONTEND_DIR: frontend
+  PLAYWRIGHT_TEST_DIR: playwright_tests
+  CYPRESS_DIR: cypress_tests
+  BACKEND_HOST: 127.0.0.1
+  BACKEND_PORT: 5001
+  FRONTEND_PORT: 5173
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5433/testdb
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: testdb
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      # === BACKEND STARTUP ===
+      - name: Install backend dependencies
+        working-directory: ${{ env.BACKEND_DIR }}
+        run: |
+          python -m venv venv
+          . venv/bin/activate
+          pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Start backend server
+        working-directory: ${{ env.BACKEND_DIR }}
+        run: |
+          . venv/bin/activate
+          nohup python run.py > backend.out 2>&1 &
+          echo "Backend started in background."
+
+      - name: Wait for backend readiness
+        run: |
+          echo "Waiting for backend..."
+          for i in $(seq 1 40); do
+            if curl -s "http://${{ env.BACKEND_HOST }}:${{ env.BACKEND_PORT }}/api/v1/knime/workflows" > /dev/null; then
+              echo "✅ Backend is up."
+              exit 0
+            fi
+            echo "Backend not ready yet ($i)..."
+            sleep 2
+          done
+          echo "❌ Backend failed to respond in time"
+          exit 1
+
+      # === FRONTEND STARTUP ===
+      - name: Install frontend dependencies
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          npm ci
+
+      - name: Start frontend dev server
+        working-directory: ${{ env.FRONTEND_DIR }}
+        run: |
+          nohup npm run dev -- --port $FRONTEND_PORT > frontend.out 2>&1 &
+          echo "Frontend started in background."
+
+      - name: Wait for frontend readiness
+        run: |
+          echo "Waiting for frontend on port $FRONTEND_PORT..."kctronics-
+          for i in $(seq 1 40); do
+            if curl -s "http://localhost:${{ env.FRONTEND_PORT }}" > /dev/null; then
+              echo "✅ Frontend is up."
+              exit 0
+            fi
+            echo "Frontend not ready yet ($i)..."
+            sleep 2
+          done
+          echo "❌ Frontend failed to respond in time"
+          exit 1
+
+      # === PLAYWRIGHT TESTS ===
+      - name: Install Playwright browsers
+        working-directory: ${{ env.PLAYWRIGHT_TEST_DIR }}
+        run: npx playwright install --with-deps
+
+      - name: Run Playwright tests (headless)
+        working-directory: ${{ env.PLAYWRIGHT_TEST_DIR }}
+        env:
+          BASE_URL: http://localhost:${{ env.FRONTEND_PORT }}
+        run: |
+          npx playwright test --project=chromium --reporter=list --reporter=html
+
+      - name: Upload Playwright artifact
